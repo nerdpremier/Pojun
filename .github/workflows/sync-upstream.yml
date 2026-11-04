@@ -37,7 +37,6 @@ jobs:
         run: |
           behind=$(git rev-list --count HEAD..upstream/main)
           echo "behind=${behind}" >> "$GITHUB_OUTPUT"
-          echo "upstream is ${behind} commit(s) ahead"
 
       - name: Merge into a sync branch
         if: steps.check.outputs.behind != '0'
@@ -63,13 +62,12 @@ jobs:
         run: |
           branch="${{ steps.merge.outputs.branch }}"
           if [ -n "$(gh pr list --head "$branch" --json number --jq '.[].number')" ]; then
-            echo "pull request already open for $branch"
             exit 0
           fi
           gh pr create \
             --base main --head "$branch" \
             --title "Sync upstream $(date +%F)" \
-            --body "Automated upstream sync: ${{ steps.check.outputs.behind }} commit(s) from \`${UPSTREAM}\`. Review, then run the test suite before merging."
+            --body "Automated upstream sync: ${{ steps.check.outputs.behind }} commit(s) from ${UPSTREAM}. Review and run the test suite before merging."
 
       - name: Report a conflicting sync
         if: steps.merge.outputs.ok == 'false'
@@ -78,10 +76,4 @@ jobs:
         run: |
           gh issue create \
             --title "Upstream sync $(date +%F) conflicts" \
-            --body "Merging \`${UPSTREAM}\` into \`main\` conflicts. Resolve locally:
-
-\`\`\`
-git remote add upstream https://github.com/${UPSTREAM}.git
-git fetch upstream
-git merge upstream/main
-\`\`\`"
+            --body "Merging ${UPSTREAM} into main conflicts. Resolve locally: git fetch upstream && git merge upstream/main"
