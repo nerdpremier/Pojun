@@ -1,0 +1,87 @@
+﻿# Keeps this fork level with the upstream project.
+#
+# Daily (and on demand) it fetches upstream/main. When upstream is ahead it
+# merges into a dated branch and opens a pull request, so the update is
+# reviewed rather than landing on main unseen. If the merge conflicts the
+# branch is abandoned and an issue is opened instead.
+name: sync-upstream
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  UPSTREAM: chu0119/Pojun
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM}.git"
+          git fetch --no-tags upstream main
+
+      - name: How far behind
+        id: check
+        run: |
+          behind=$(git rev-list --count HEAD..upstream/main)
+          echo "behind=${behind}" >> "$GITHUB_OUTPUT"
+          echo "upstream is ${behind} commit(s) ahead"
+
+      - name: Merge into a sync branch
+        if: steps.check.outputs.behind != '0'
+        id: merge
+        run: |
+          branch="sync/upstream-$(date +%Y%m%d)"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          if git merge --no-edit upstream/main; then
+            git push origin "$branch"
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open pull request
+        if: steps.merge.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          branch="${{ steps.merge.outputs.branch }}"
+          if [ -n "$(gh pr list --head "$branch" --json number --jq '.[].number')" ]; then
+            echo "pull request already open for $branch"
+            exit 0
+          fi
+          gh pr create \
+            --base main --head "$branch" \
+            --title "Sync upstream $(date +%F)" \
+            --body "Automated upstream sync: ${{ steps.check.outputs.behind }} commit(s) from \`${UPSTREAM}\`. Review, then run the test suite before merging."
+
+      - name: Report a conflicting sync
+        if: steps.merge.outputs.ok == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "Upstream sync $(date +%F) conflicts" \
+            --body "Merging \`${UPSTREAM}\` into \`main\` conflicts. Resolve locally:
+
+\`\`\`
+git remote add upstream https://github.com/${UPSTREAM}.git
+git fetch upstream
+git merge upstream/main
+\`\`\`"
