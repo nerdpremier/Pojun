@@ -1569,6 +1569,11 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if msg := validateFindingEvidence(a.Severity, a.Evidence); msg != "" {
 			return actool.Errorf(msg), nil
 		}
+		// 机械验证凭据校验（v0.4.52）：critical/high 必须附 HTTP 状态码/curl 输出/
+		// 工具命中结果等可机械复现的验证凭据。纯版本匹配不通过。
+		if msg := validateMechanicalEvidence(a.Severity, a.Evidence); msg != "" {
+			return actool.Errorf(msg), nil
+		}
 		// 证据逐字回验（v0.4.29，P0b #2，PentestGPT 机制自研）：先告警后拦截。
 		// 证据里至少要有一行能在本次 run 的真实工具回显里逐字找到出处——
 		// 「none」且档位=block 时只打回 critical/high（误报代价最高的两档）。
@@ -1680,6 +1685,12 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			result.EvidenceStatus = "partially_bound"
 			result.EvidenceNote += " ⚠ 以下流量引用未生效（ID 不存在或正文不可读）：" + strings.Join(ids, ", ") +
 				"。已生效的引用已正常绑定；若这些 ID 确实存在，请用 traffic_get 核实真实 ID 后用 bind_finding_traffic 补绑。"
+		}
+		// 回溯归属（v0.4.47）：同一意图目录下所有 finding_id 为空的证据一次性归属。
+		if bindIntent := pid(a.IntentID); bindIntent > 0 && t.taskID > 0 {
+			if n, err := t.ts.RetroBindIntentEvidence(t.taskID, bindIntent, recorded.FindingID); err == nil && n > 0 {
+				result.EvidenceNote += fmt.Sprintf(" ✨ 自动归属了本意图的 %d 条历史证据。", n)
+			}
 		}
 		raw, _ := json.Marshal(result)
 		return actool.Text(fmt.Sprintf("finding recorded: %d\n%s", recorded.NodeID, raw)), nil
