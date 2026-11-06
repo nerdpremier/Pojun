@@ -684,6 +684,14 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.searchAllWorkerTraces(), t.getWorkerTrace(),
 		// node_detail：worker 拿到 intent_id/节点 id 后可查该节点完整详情（配合上面的回看）。
 		t.nodeDetail(),
+		// expand_digest（v0.4.50）：worker 可以展开冷区折叠的节点完整内容——
+		// 之前 worker 只能看到 title/summary 摘要，折叠内容对 worker 不可见。
+		t.expandDigest(),
+		// list_untested_assets（v0.4.50）：worker 也应该知道哪些资产还没测——
+		// 在执行涉及资产遍历的意图时能自行补漏。
+		t.listUntestedAssets(),
+		// list_goals（v0.4.50）：worker 知道目标完成进度，有助于判断该方向值不值得继续深挖。
+		t.listGoals(),
 		// search_vulns / get_vuln：worker 识别出目标组件与版本后直接查已知漏洞与
 		// 影响区间——公开情报优先于模型现想 payload。
 		t.searchVulns(), t.getVuln(), t.getPoc(), t.scanWithNuclei(), t.netContext(),
@@ -692,6 +700,9 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// http_probe（v0.4.27）：批量探活领域工具——替代逐条手写 curl（任务 5 实测
 		// Bash 占 tool_use 57%、curl 2750 次），一次往返拿整批紧凑摘要。
 		t.httpProbe(),
+		// js_audit（v0.4.59）：SPA/webpack 前端源码泄露审计——任务 18（Vue 站点）
+		// 实测对 .js.map 泄漏完全漏检；sourcemap 还原=原始源码+密钥+接口清单。
+		t.jsAudit(),
 		// auth_request：用资产上已登记的凭据组装带认证的请求（横向/越权验证的前提）。
 		t.authRequest(),
 		// diff_responses：对比两个响应的结构性差异（越权/可枚举/状态机三类的共同基础）。
@@ -733,6 +744,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.searchVulns(), t.getVuln(), t.getPoc(), t.scanWithNuclei(), t.netContext(),
 		// http_probe（v0.4.27）：批量探活领域工具（mainagent 与 worker 同款）。
 		t.httpProbe(),
+		// js_audit（v0.4.59）：SPA/webpack 源码泄露审计（mainagent 与 worker 同款）。
+		t.jsAudit(),
 		// listener_*：回连接收器（红队 C2 前置）——start/stop 走 ask 审批，sessions 只读。
 		t.listenerStart(), t.listenerStop(), t.listenerSessions(),
 		// auth_request：用资产上已登记的凭据组装带认证的请求（横向/越权验证的前提）。
