@@ -4,6 +4,323 @@
 
 ## [Unreleased]
 
+## [0.4.62] - 2026-11-06
+
+> Issue #2 修复：idle-stop 在探索期过于激进（用户反馈 + 线上数据实证）。
+> 线上 journal 实测 2,583 条收场日志、单意图被拦到「连续 20 轮」才结束——
+> 根因是 PreToolUse 的 block 只拦单次工具调用、run 不结束，模型逐轮跟 hook
+> 辩论烧 token；且收场原因完全没落库（ReasonStopHookPrevented 未分流，
+> 全部落进 done + 空原因，统计与 planner 都看不见）。
+
+### 修复
+
+- **收场不彻底（核心）**：提示后仍无写回时，到 prevent 轮（5 轮）取消 run
+  context 真正收场——不再逐轮 block 让模型辩论（nudge 3 轮 + 2 轮写回机会）。
+  新增 `AbortIdleStop` cancel cause；engine 分流为 exhausted(idle_stop)。
+- **收场原因落库**：idle-stop 现在写 `blocked_reason=idle_stop`（此前完全
+  不可见）；planner 可区分「探到边界」与「正常完成/超时」。
+- **进展口径扩大**：`save_evidence` 计入写回（附证据=具体产出，且不再被拦）；
+  提示词明确列出四种产出（fact/asset/finding/evidence）且**负结果也算事实**。
+- **提示词重写**：说明「这不是惩罚，是给你一次把成果落库的机会」，写回后计数
+  重置——直接回应「worker 花 token 跟规则辩论」的观察。
+
+## [0.4.61] - 2026-11-06
+
+> 全新部署打磨：装机脚本前置检查、uv 落位修复、README 系统选择指引。
+
+### 修复
+
+- **uv 落位**（真实踩坑）：pojun 服务是 systemd 用户，PATH 只保证
+  `/usr/local/bin` 等系统目录；pipx 以 root 安装会把 uv 放到 `/root/.local/bin`
+  ——服务用户既无权限穿越 /root 也不在 PATH，导致「FOFA MCP 预设能加、MCP 起不来」。
+  ensure_uv 现在统一把二进制落到 `/usr/local/bin/uv` 并验证可执行。
+
+### 新增
+
+- **装机前置检查**：内存 <4G、根分区 <10G、python3 <3.10 时给出明确提示（不阻断）。
+- **安装完成后的下一步指引**：管理员密码 → LLM 通道 → MCP 预设（FOFA/Playwright）
+  → 任务 Playbook。
+- **README 系统选择与配置要求表**：Debian 12 / Ubuntu LTS 首选，Kali 可用但滚动
+  有风险，RHEL 系覆盖少；最低 2C4G/20G、推荐 4C8G/60G。
+- `install.sh --help` 顶部加系统与硬件建议。
+
+## [0.4.60] - 2026-11-06
+
+> 用户反馈「任务几乎不调 skill」+ 14 个同类项目对比研究后的融合批次
+> （完整分析见 docs/同类工具对比-2026-11-06.md）。
+
+### 修复
+
+- **技能速查注入 system prompt**（根因）：数据实证——skill_usage 全生命周期仅
+  8 次、任务 18 零次调用；根因是 Skill 元工具只活在工具描述里，系统提示从不
+  提。renderSystem 现在按 agent 绑定注入「技能速查块」（名称+何时用+调用方式），
+  覆盖 worker/planner/pentest/chat；registry 60s 缓存。附回归测试。
+
+### 新增
+
+- **内置 4 个任务 Playbook**（借鉴 PentestAgent）：Web 全流程渗透 / 内网域渗透 /
+  APP 逆向+API / 纯侦察资产盘点——安康系列实测验证过的目标结构，建任务一键套用；
+  settings flag 批次种子，用户删改不复活。附幂等测试。
+- **独立复现规划规则**（借鉴 Pentest-AI / Pentest-Swarm-AI）：critical/high 若
+  证据仅来自单一 worker、无独立复验事实，planner 派「只复现不扩大」的验证意图；
+  复现失败必须降级，不许保留高等级。
+- **HexStrike 工具桥 MCP 预设**：桥接 150+ 安全工具（nmap/sqlmap/metasploit/
+  nuclei/ghidra…），克隆到 mcp-servers/hexstrike-ai 并启动服务即用。
+
+## [0.4.59] - 2026-11-06
+
+> 用户实测反馈：Vue 站点（任务 18）对 webpack 源码泄露完全没有检测——
+> worker 不去看 `.js.map`，SPA 前端面被直接略过。参考外部资料
+> （SourceMapX / unwebpack-sourcemap / shuji 的检测链）做成平台领域工具。
+
+### 新增
+
+- **js_audit 领域工具**（worker/mainagent 同款）：入口 URL → 自动提取
+  `<script src>` 与 hash chunk → 检测 sourceMappingURL（外链/内联 base64）+
+  `<js>.map` 兜底探测 → 命中即还原 sourcesContent 原始源码落盘（保留
+  .vue/.env 目录结构）→ 扫描密钥（阿里云 LTAI/AKID、AWS AKIA、私钥、JWT、
+  AK-SK 键值对、内网段）→ 抽取接口/路由清单。只落脚本+组命令，流量照常过
+  MITM 留证。结论口径：map 命中=CWE-540 high；真实凭据=critical。
+- **skill 更新**：api-recon 与 web-attack-methods 增补「Webpack/Sourcemap
+  源码泄露」章节（含假点：SPA fallback 给 404 页回 200 不算命中）；
+  src-hunting 工具映射表加 js_audit。
+
+### 验证
+
+- 本地 fixture（假 Vue dist + 真实 sourcesContent）：链路 html→scripts→js→
+  map→还原落盘→密钥命中（LTAI/内网段）全通；
+- 对平台自身前端实测：SPA fallback 200 误判 bug（可达≠命中）已修复，
+  修复后 found=0 准确。
+
+## [0.4.58] - 2026-11-06
+
+> 复盘后续批次：开局窄面预期提示 + 上下文窗口纠偏。
+
+### 新增
+
+- **开局窄面提示**：任务首次启动时范围内资产 <10 个，活动流提示「资产面较窄，
+  预期产出有限；可考虑扩大范围或调低预算/超时」——薄面站点（如任务 16/17）
+  提前管理预期，避免完整跑完流程才发现产出有限。
+
+### 修复
+
+- **LLM 配置页提示纠偏**：页面写「0 = 默认 200K」但代码实际按 1M 计算压缩阈值
+  （早前应用户要求改的）——照旧页面会误导用户不填窗口，超模型真实上限的请求
+  只会以远端报错收场（LongCat 压缩错误率 11.4% 的根因）。提示已改为
+  「务必按模型真实窗口填写」。
+- **Kali 通道窗口补全**：OpenCode 256K / 硅基流动 128K / LongCat 128K
+  （此前全部 0，压缩阈值按 1M 形同虚设）。
+
+## [0.4.57] - 2026-11-06
+
+> 全平台数据复盘（12 个真实任务、56k 次 LLM 调用、295 条漏洞）后的改进批次。
+> 完整数据与结论见 docs/复盘-2026-11-06.md。
+
+### 新增
+
+- **收尾报告缺口检查**：任务落终态（goalless done / 自动收尾 / 超时收尾）前
+  检查「已上报但 report 为空」的漏洞并在活动流点名（复盘发现 12 任务累计
+  7 条静默空报告漏洞，导出交付直接受影响）。
+- **任务复活自愈**：从终态复活时自动重开 blocked="context canceled" 的遗留
+  意图（部署重启的遗留物，复盘发现 11 条永久卡死）——继续 = 把没跑完的跑完；
+  用户手动 block 的不受影响。附回归测试。
+- **复盘文档**：docs/复盘-2026-11-06.md——任务效率总表、token 成本结构、
+  通道健康、后续建议（compactor 降本 / context_window_k 补全 / 低产目标预期管理）。
+
+### 运维（Kali 实例）
+
+- 通道治理：egg-alpha（42% 错误）与 GLM/nemotron/qiniu（60–70%）移出轮换池；
+  compactor 钉到主力 DeepSeek-V4.1（0.3% 错误）——此前 LongCat 压缩错误率 11.4%
+  且 69 次错误集中在任务 17（该任务 LLM 时间 1981 分钟、每漏洞成本 53.5M token，
+  为全场最差 6 倍）。
+
+## [0.4.56] - 2026-11-05
+
+> 技能与 MCP 大规模扩充（参考 CyberStrikeAI 的技能体系，结合平台自身工具链）：
+> 内置 skill 从 5 个扩到 21 个，新增 MCP 预设目录与 FOFA 资产测绘服务器。
+
+### 新增
+
+- **内置 skill 21 个**：新增 attack-surface-recon / web-attack-methods /
+  api-security-testing / component-vuln-intel / cloud-attack-methods /
+  active-directory-attack / source-code-hunting / zero-day-research /
+  ai-llm-app-attack / binary-mobile-reversing / smart-contract-audit /
+  wireless-hardware-attack / redteam-opsec / pentest-verification /
+  pentest-output-standards / src-hunting；redteam-ops 补齐 frontmatter 并扩写成
+  实战后渗透清单。
+- **SRC 方法论库（src-hunting）**：迁移完整的 48 篇测试知识库 + 11 篇流程规则，
+  SKILL.md 提供索引与平台工具映射，`${SKILL_DIR}` 按需打开，禁止通读；
+  知识库/规则随发行包与镜像分发。
+- **默认可见性绑定**：执行类 skill 绑 worker/pentest，方向类绑 planner——
+  此前 redteam-ops/playwright-cli 写了却从未绑定给任何 agent（用户 2026-11-05
+  反馈的「写了没人看得到」），并加守门测试防回退。
+- **MCP 预设目录**：MCP 页新增 9 个常用服务器一键填充（Playwright / Chrome
+  DevTools / Burp / Fetch / Sequential Thinking / Memory / Filesystem /
+  Context7 / FOFA）。
+- **FOFA 资产测绘 MCP**（mcp-servers/fofa）：官方三账号轮换 + one-fox 社区通道，
+  随发行包与 Docker 镜像分发；预设 `uv --directory mcp-servers/fofa run python
+  fofa.py`；.env 模板只给占位符，密钥不入仓库。
+
+### 修复
+
+- redteam-ops 缺 YAML frontmatter，导致 CI 连续红灯（skill 加载后 description
+  为空）；已补齐并纳入守门测试。
+
+### 验证
+
+- FOFA MCP 端到端实测：stdio 握手 → tools/list（get_alerts/get_alerts_onefox）
+  → one-fox 通道真实查询返回；官方通道 key 受限时自动提示/shift；
+- skill 加载与绑定守门测试全绿；全仓回归通过。
+
+## [0.4.55] - 2026-11-05
+
+> 任务 13 事故修复：「深入漏洞」人工跟进意图被任务终局收尾静默吞掉。
+> 时间线实证：16:36:16 跟进意图 #7470 创建 → 16:36:17 终局判定轮启动 →
+> 「全部目标已 met，按终局收尾指令不新增意图，本轮收束」→ 任务 timeout。
+
+### 修复
+
+- **终态复活重置超时预算**（根因）：任务 11-04 因「目标已全部达成」落 done，
+  但 first_run_at/deadline_at 仍停在 11-04 的 8 小时预算（18:02 已过期）。
+  11-05 人工跟进把 done 复活为 running 时，旧代码只对 timeout 复活重置时钟 →
+  新起的 deadline 协调器读到已过期 deadline，1 秒后再次收尾，跟进意图从未被
+  worker 领取。现在任何终态（done/failed/timeout）复活都清空
+  first_run_at/deadline_at，下一次真实运行重新盖章整套预算。
+- **Engine per-run 闸门同口径清理**：resetTimeoutRevival → resetTerminalRevival，
+  覆盖 settling/deadline/stamped/coordStarted 四项，复活任务不再被残留标志卡住。
+- **复活时清挂起收尾请求**：上一轮生命周期遗留的 pendingSettle 作废，避免复活后
+  第一个规划轮先消费它又收一遍。
+- 回归测试：done 复活后 DB/内存双时钟清零 + 重新盖章得到从现在起算的新预算。
+
+## [0.4.54] - 2026-11-05
+
+> Docker 镜像内置工具补齐：此前镜像只有 recon 基础件（nmap/nuclei/
+> Playwright/LibreOffice），与二进制形态 --with-tools 的工具集差一大截，
+> 而 Docker 形态没有 pojun-hostd 一键安装——缺的工具永远显示缺失。
+
+### 新增
+
+- **镜像内置工具对齐 --with-tools**：apt 组（masscan/sqlmap/hydra/whatweb/
+  ffuf/john/impacket/socat/proxychains4，逐包容错）+ GitHub release 表
+  （httpx/subfinder/naabu/dnsx/katana/tlsx/notify/interactsh/gitleaks/chisel/
+  amass/dalfox/feroxbuster/gobuster）+ pip 组（wafw00f/impacket/semgrep/
+  pwntools）+ SecLists 字典（/opt/SecLists）+ 公文字体（COPY 仓库内
+  report/fonts，docx→PDF 不再依赖运行期下载）。
+- **基础镜像 Python 3.12→3.11**：impacket/semgrep 等工具链兼容性更稳。
+- **下载全加超时**：nuclei/工具下载 --max-time/--connect-timeout，构建机
+  网络半死时快速失败而不是无限挂起。
+
+### 修复
+
+- **netexec 移除出自动安装**（install.sh 与镜像同口径）：NetExec 2026 起
+  商业化，PyPI 发行文件全部撤下（/simple/netexec 404），pip 装必失败；
+  hosttools 条目注明需从 GitHub 源码安装。bookworm 源没有 nikto，镜像
+  逐包容错跳过（体检页如实显示）。
+
+## [0.4.53] - 2026-11-05
+
+> 图片预览缩放补齐：任务总览与漏洞详情的文档分页预览此前仍是静态 img，
+> v0.4.48 的缩放组件漏掉了这三处——大图（2250x1500 曲线图、Word/PDF 转图页）
+> 看不清细节也不能放大。
+
+### 修复
+
+- **任务总览图片预览接入缩放组件**：滚轮缩放（0.5x–8x）、拖拽平移、双击
+  还原/放大；标题/描述/下载按钮信息不变。
+- **文档分页预览同样接入**（任务总览 + 漏洞详情两处）：Word/PDF 每页转图后
+  可缩放查看，分页控件移入 footer 插槽，翻页时缩放状态自动重置。
+- ZoomableImageDialog 新增 footer 可选插槽（供分页等附加控件复用）。
+
+## [0.4.52] - 2026-11-05
+
+> 借鉴 raptor 认识论闸门 + CVEngine triage 三重夹逼：critical/high 漏洞必须附
+> 可机械复现的验证凭据（HTTP 状态码/curl 命令输出/工具命中结果），纯版本匹配
+> 不再能作为漏洞证据——发行版 backport 补丁不改版本号，版本匹配 ≠ 漏洞。
+
+### 新增
+
+- **机械验证凭据校验**（`validateMechanicalEvidence`）：report_finding 上报
+  critical/high 时检查 evidence 是否包含机械验证信号（HTTP/1.x 响应头、curl/
+  sqlmap/nuclei 输出、状态码、JSON 字段、响应头字段）。无凭据时回灌中文纠正
+  提示，模型可在同会话补证据或降级——「可能存在」不是 finding，「实际拿到」才是。
+- **版本匹配单独拦截**：evidence 只有 version/banner/server 头匹配而无行为级
+  验证时，提示用 http_probe/curl 实际触发目标，或降为 medium 注明
+  「版本匹配，行为未验证」。medium/low 不做机械验证校验（低危经常只有一句
+  说明，过度校验阻碍正常上报）。
+
+
+## [0.4.51] - 2026-11-05
+
+> 用户反馈主 agent 干活不派任务。数据分析：mainagent 249 次 Bash 调用 vs 仅 10 次
+> add_intent——大量 Bash 里出现了 curl 打目标、dig 解析等应该派给 worker 的操作。
+
+### 修复
+
+- **mainagent 角色边界硬规则**：prompt 新增「角色边界硬规则」段——Bash 仅限
+  本地文件操作（报告编辑/图片处理），**严禁用 Bash 与目标系统交互**。
+  判断标准：Bash 命令里出现目标 IP/域名/URL = 越权，应写成 add_intent 派下去。
+  此前 prompt 虽说"你不亲自探索"但没有硬规则约束 Bash 的使用场景。
+
+## [0.4.50] - 2026-11-05
+
+> 红队工作流差距审计——从渗透测试工程师视角逐环节检查平台功能覆盖，
+> 补齐 worker 工具权限 + 充实红队后渗透 skill。
+
+### 新增 / 优化
+
+- **Worker 工具权限扩展**：新增 `expand_digest`（展开冷区折叠节点完整内容）、
+  `list_untested_assets`（自行补漏未测资产）、`list_goals`（感知目标完成进度）
+  ——worker 不再只被动执行，有了自主判断方向完成的工具面。
+- **redteam-ops skill 大幅充实**：从 106 行扩展到 ~100 行结构化方法论——
+  Linux/Windows 提权清单、横向移动（pth/隧道/凭据喷射）、Windows 域专项
+  （Kerberoasting/DCSync/BloodHound）、数据获取纪律、证据绑定。
+
+## [0.4.49] - 2026-11-04
+
+> 全流程审计修复批次：拦截规则误伤清理（322 条审批积压根因）+ worker 提示词
+> 边界编号修正 + record_fact 单次上限。
+
+### 修复
+
+- **拦截规则误伤清理**：「数据外泄管道」（158 次命中=所有 POST 请求）、「删除类
+  接口路径」（80 次=测删除端点是正常渗透行为）、「rm -rf」（22 次=工作目录
+  清理合法）、「破坏性系统命令」（44 次=payload 里的字符串误匹配）——四条
+  误伤率最高的规则已停用，Kali pending 审批 322→0。
+- **record_fact 单次 facts 数组上限 10 条**：防图谱灌爆。
+- **continues 状态校验放宽**：只拒 running，open 允许（暂停回退合理接续）。
+- **worker 边界编号修正**：新增第 3 条「意图粒度过粗时的自处理」，全部条目
+  重编为 1-9。
+- **AddCompanyScopeAuto ON CONFLICT 修复**。
+
+## [0.4.48] - 2026-11-04
+
+> 三个优化：①现场证据图片预览支持滚轮缩放/拖拽/双击还原——报告阅读时需要
+> 放大 URL/参数/响应特征细节，静态图看不清导致误判；②发现页批量导出新增
+> Word 格式（每条漏洞独立 .docx 打包 .zip）；③MD 导出格式改进。
+
+### 新增 / 优化
+
+- **图片预览滚轮缩放**：`ZoomableImageDialog` 组件——滚轮缩放（0.5x–8x）、
+  拖拽平移（scale>1 时自动切 grab cursor）、双击还原/放大到 3x、还原按钮。
+  漏洞详情页图片预览已替换。
+- **发现页批量 Word 导出**（`docx-zip` 格式）：每条漏洞独立 .docx（含完整
+  公文格式/封面/资产名映射/复测记录/证据图），打包 .zip；前端导出面板新增
+  "Word 批量导出"选项。
+- **MD 导出改进**：每条漏洞补充发现者（Worker）字段；证据标题从「证据」改为
+  「证据 / PoC」更清晰；明文保真口径标注。
+
+## [0.4.47] - 2026-11-04
+
+> 用户反馈「从任务证据中挑选」需要人工操作——扫到就归才是正确做法。
+> 根因：worker 先 save_evidence、后 report_finding，此时证据 finding_id 为空。
+
+### 新增
+
+- **report_finding 回溯归属**：漏洞落库后自动把同一意图运行目录
+  （/i<intentID>/）下所有 finding_id 为空的证据一次性归属到本漏洞。
+  同一意图是天然的 provenance 边界——不会误绑其他意图的证据。
+  返回值 evidence_note 告知模型自动归属了几条。
+
 ## [0.4.46] - 2026-11-04
 
 > 关键根因修复：task 12 首轮意图仍是总目标复读。根因不是 planner——是

@@ -14,7 +14,7 @@ Go 单体后端（内嵌 Next.js 前端）· PostgreSQL · 多 Agent 自主推�
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-linux-lightgrey)
 
-📦 **Docker**：`ghcr.io/chu0119/pojun` · `xingchuan1314/pojun`
+📦 **Docker**：`ghcr.io/chu0119/pojun`（amd64 / arm64 双架构，每版 CI 自动发布）
 🧠 **单技能版**：[pojun-skill](https://github.com/chu0119/pojun-skill)——Pojun 方法论的单 skill 版，任意 AI Agent 即装即用
 
 </div>
@@ -25,7 +25,7 @@ Go 单体后端（内嵌 Next.js 前端）· PostgreSQL · 多 Agent 自主推�
 
 本项目最初是 **ARTEX**：fork 自已删除的原作者项目 `Autumn-27/ARTEX`（基于其最终
 定版 v0.3.15）。接手的第一个版本是 v0.3.15 的修复与加固；此后 v0.3.16 以来
-**160+ 提交、约 4 万行新增**全部由本仓库维护者完成，覆盖了原作者版本没有的
+**725+ 提交、约 5 万行新增**全部由本仓库维护者完成，覆盖了原作者版本没有的
 整条能力线（漏洞情报运营、红队作战、证据附件、公文级报告、模型路由……）。
 
 2026-11-02 起项目正式改名 **破军 / Pojun**（`pojun`）：代码标识、二进制
@@ -42,7 +42,7 @@ Pojun 是一套 **LLM 多 Agent 自主渗透测试平台**：你给一句话目�
 
 与本仓库**前一版本**（接手自已删除的原作者项目 `Autumn-27/ARTEX`，基于其最终定版
 v0.3.15）相比，现在的 Pojun 已经是**完全独立演进的新项目**——原作者的代码留在
-git 历史里作为起点，v0.3.16 以来的 **160+ 提交、约 4 万行新增**全部由本仓库的
+git 历史里作为起点，v0.3.16 以来的 **725+ 提交、约 5 万行新增**全部由本仓库的
 维护者完成，覆盖了原作者版本没有的整条能力线：
 
 | 能力线 | 本版本做了什么 |
@@ -53,6 +53,9 @@ git 历史里作为起点，v0.3.16 以来的 **160+ 提交、约 4 万行新增
 | **工程可靠性** | LLM 三通道轮询（熔断+故障转移+用量归因）/ 拆解墙钟 / planner 双保险 / 任务收官 / **自动收尾判据**（目标闭环、连续 N 轮无新增、覆盖率阈值、最大规划轮数，可在设置页调）/ 一键更新（校验+回滚） |
 | **工具与交付** | 宿主工具 63 件**一键装齐** / 漏洞 19 类标准枚举 / **专业级 Word 报告**（封面·目录·页眉页脚·严重度着色·复测记录·流量证据·修复路线图）/ **证据附件**（截图 + Word/Excel/PPT/PDF 取样转图片，任务内隔离、可归属漏洞）/ 证据版本化+sha256 校验 / 手机端适配 |
 | **Agent 推理** | **意图假设与成功判据**（hypothesis/success_criteria）/ worker 五步作业框架+绕过清单 / stop_reason 进态势（接续归因不再靠猜）/ **意图墙钟遥测** / Guard 归因回流 planner / 续跑摘要与零写回复盘 / **按角色配模型**（模型路由策略文档化） |
+| **证据可信与自动归属** | **机械验证凭据闸门**（critical/high 必须附 HTTP 状态码/curl/工具命中输出等可机械复现凭据，纯版本匹配拦截降级——「可能存在」不是 finding）/ **L1-L4 证据分级**（critical/high 需 L3+ 篇幅门槛）/ 证据源核验（evidence 与工具输出逐行比对）/ **证据自动归属**（report_finding 回溯绑定同一意图产物 + 附件宿主/域名自动匹配）/ **事实自动锚定**（fact 文本中的 URL/主机自动挂资产图）/ **公司自动归属**（按范围资产分布推断） |
+| **技能与 MCP** | **21 个内置 skill**：SRC 方法论库（48 篇测试知识 + 11 篇流程规则，按需加载）/ 攻击面侦察 / Web 攻击 / API 安全 / 云 / 域 / 源码审计 / 0day / AI 应用 / 移动逆向 / 合约 / 无线 / 后渗透 / OPSEC / 验证与报告规范；**9 个 MCP 预设**一键添加（FOFA 资产测绘含 one-fox 通道、Playwright、Chrome DevTools、Burp、Fetch、Sequential Thinking、Memory、Filesystem、Context7）；skill 默认绑定到对应角色，不用手工配置 |
+| **数据在线查看** | **数据文件在线阅读器**（JSON/JSONL/CSV/TSV/文本转表格，.gz 自动解压重分类，API 信封自动下钻 data 数组）/ **智能关联**（附件按宿主/域名自动匹配漏洞与资产）/ **图片滚轮缩放预览**（0.5x–8x 缩放·拖拽平移·双击还原，任务总览/漏洞详情/文档分页全接入）/ **批量 Word 导出**（一漏洞一 docx 打包 zip）/ **明文保真口径**（第一方证据递交官方不打码不脱敏） |
 | **成本与覆盖** | **http_probe 批量探活**（一次往返替代逐条 curl，响应压成一行摘要）/ **覆盖归账**（record_fact 从文本自动锚定资产）/ **未测资产按簇排序**（静态沉底、同前缀相邻）/ **worker 态势瘦身**（规划专用字段不进 worker 对话）/ LLM 用量按角色聚合 / 瞬时取消自动重试 |
 
 原作者版本有的核心（双图架构、planner/worker 编排、MITM 流量代理、审批门）全部
@@ -222,6 +225,20 @@ flowchart LR
 > 依赖 **PostgreSQL**；探索需配置 **LLM**（UI 里配，支持 Anthropic / OpenAI /
 > 任意 OpenAI 兼容网关，三通道轮询 + 故障转移）。
 
+### 系统选择与配置要求
+
+| 系统 | 结论 |
+|---|---|
+| **Debian 12 (bookworm)** | ✅ **首选**：稳定、systemd、PostgreSQL 15 源内、LibreOffice/poppler/uv 齐全 |
+| **Ubuntu 22.04 / 24.04 LTS** | ✅ **首选**：与 Debian 同源，长期支持 |
+| Kali | ⚠️ 可用（开箱全套工具），但滚动更新有升级风险，生产环境不建议 |
+| RHEL / Rocky / CentOS Stream | ⚠️ 支持（dnf 路径），但 ffuf/sqlmap 新版等工具覆盖少，按需自装 |
+
+**硬件**：最低 2 核 4G / 20G 磁盘（不含工具）；**推荐 4 核 8G / 60G**（含 SecLists
+约 2.5G、nuclei 模板、Playwright chromium、LibreOffice）。
+**网络**：安装期需访问 GitHub 与 LLM 网关；受限环境用 `--install-proxy`。
+**Python**：内置 FOFA MCP 需要 Python ≥ 3.10（不影响主服务）；`uv` 由安装脚本自动准备。
+
 ### 方式一：一条命令，全自动交互安装（推荐 · 仅 Linux）
 
 在**全新 Linux 服务器**（Debian/Ubuntu/CentOS/RHEL/Kali 等）上以 root 执行：
@@ -252,7 +269,28 @@ curl -fsSL .../install.sh | sudo bash -s -- --mode=docker
 幂等：重复执行 = 原地升级；`config.json` / `jwt.key` / 数据 / 数据库不动。
 卸载：`systemctl disable --now pojun pojun-hostd && rm -rf /opt/pojun`。
 
-### 方式二：下载预编译包（Linux amd64 / arm64）
+### 方式二：Docker Compose 直跑（ghcr 已发布镜像）
+
+已经会用 Docker 的话，不需要 install.sh：
+
+```bash
+git clone --depth 1 https://github.com/chu0119/Pojun.git pojun && cd pojun
+cp .env.example .env      # 至少改 POSTGRES_PASSWORD；POJUN_TAG 可钉到具体版本（如 v0.4.53）
+docker compose up -d      # → http://localhost:8787
+```
+
+- 镜像 `ghcr.io/chu0119/pojun`，amd64/arm64 双架构，`POJUN_TAG` 默认 `latest`；
+  渗透工具随镜像内置（与二进制 `--with-tools` 同一套）：nmap / masscan /
+  sqlmap / hydra / whatweb / nikto / ffuf / john / impacket / socat /
+  proxychains / nuclei / httpx / subfinder / naabu / dnsx / katana / tlsx /
+  notify / interactsh / gitleaks / chisel / amass / dalfox / feroxbuster /
+  gobuster / wafw00f / semgrep / pwntools / SecLists 字典 /
+  Playwright + chromium / LibreOffice / poppler / ImageMagick / 公文字体；
+- 数据落 `./data`（宿主机可直接查看/备份），数据库在 `pgdata` 卷；
+- 升级：`docker compose pull && docker compose up -d`；卸载：`docker compose down -v`；
+- 回连端口映射示例见 `docker-compose.yml` 注释（reverse shell 需放开对应端口）。
+
+### 方式三：下载预编译包（Linux amd64 / arm64）
 
 到 [Releases](https://github.com/chu0119/Pojun/releases) 下载
 `pojun-<版本>-linux-<架构>.zip`（附 SHA256SUMS），解压后：
@@ -265,7 +303,7 @@ cp config.example.json config.json   # 填好 database 连接
 > 用 `start.sh` 启动而非直接跑二进制——它是守护脚本，「一键更新」靠它完成换装。
 > 目前只适配 Linux；Windows/macOS 暂不支持。
 
-### 方式三：从源码编译
+### 方式四：从源码编译
 
 ```bash
 cd web && npm ci && npm run build:static && cd ..
@@ -377,6 +415,7 @@ docs/           设计文档 / 部署手册 / 评估报告 / 能力对照
 
 | 文档 | 内容 |
 |---|---|
+| [docs/AI-交接指南.md](docs/AI-交接指南.md) | AI 接手本项目入口：机制→代码位置地图、发版流程、测试纪律、已知问题与未决方向 |
 | [docs/01-双图架构.md](docs/01-双图架构.md) | 资产图/探索图、锚点、schema 迁移设计、不变量清单 |
 | [docs/02-引擎与调度闭环.md](docs/02-引擎与调度闭环.md) | planner/worker 编排与生命周期 |
 | [docs/03-LLM接入层.md](docs/03-LLM接入层.md) | 通道选路、轮询池、熔断、录制计量 |
@@ -389,6 +428,8 @@ docs/           设计文档 / 部署手册 / 评估报告 / 能力对照
 | [docs/产品全面体检-2026-10-31.md](docs/产品全面体检-2026-10-31.md) | 四路全面体检：P0 缺陷基线/冗余清单/执行批次状态 |
 | [docs/深度优化方案-2026-10-31.md](docs/深度优化方案-2026-10-31.md) | 报告质感×Agent 认知×攻击链——当前路线图 |
 | [docs/模型路由策略.md](docs/模型路由策略.md) | 按角色配模型：planner 强推理/worker 中推理/judge 便宜档 |
+| [docs/同行对比分析-2026-11.md](docs/同行对比分析-2026-11.md) | 两轮 12+ 同行项目代码级调研（CAI/PentestGPT/hackingBuddyGPT/pentagi/SWE-agent/bbot/sysreptor/CVEngine/raptor/fuxi/redcell/rea）与借鉴落地清单 |
+| [docs/shannon-借鉴分析-2026-11-01.md](docs/shannon-借鉴分析-2026-11-01.md) | Shannon 借鉴：证据分级/报告叙事/认证配置/证据附件落地记录 |
 
 ## 与原作者版本的关系（来源声明）
 
@@ -401,7 +442,7 @@ docs/           设计文档 / 部署手册 / 评估报告 / 能力对照
 - **重建**：全部设计文档（原作者删除过 docs）、CI 门禁、依赖解耦（norma SDK
   fork）、Docker 源；
 - **新增**：上文[能力线](#这是什么)所列的情报运营 / 红队作战 / 安全加固 /
-  工程可靠性 / 工具与交付五大线，以及 160+ 提交的持续修复与加固。
+  工程可靠性 / 工具与交付五大线，以及 725+ 提交的持续修复与加固。
 
 换言之：**起点是别人的，现在是我们的。**
 
