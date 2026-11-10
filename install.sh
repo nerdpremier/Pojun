@@ -51,6 +51,9 @@ POJUN 安装脚本
 
 用法: $0 [选项]
 
+系统建议: Debian 12 / Ubuntu 22.04+ LTS（稳定）；Kali 适合开箱全套工具（滚动更新有风险）
+          最低 2C4G/20G，推荐 4C8G/60G（含工具、字典与浏览器）
+
 部署形态:
   --mode=binary|docker   二进制（默认，推荐）或 Docker。不给则交互选择
                          （管道执行 curl ... | bash 时同样会从 /dev/tty 交互）
@@ -117,6 +120,43 @@ if ! command -v curl >/dev/null 2>&1; then
   command -v dnf >/dev/null 2>&1 && dnf install -y curl >/dev/null || true
 fi
 command -v curl >/dev/null 2>&1 || die "curl 安装失败，请手动安装"
+
+# CA 证书是后续全部 HTTPS 的前提。极简系统（比如用 --no-install-recommends
+# 装的 curl 不会带入 Recommends 的 ca-certificates）会出现 curl: (77)
+# "error setting certificate file"，所有 HTTPS 请求全挂且报错指不到真因。
+# 两大发行版的 CA 包位置都判一下，缺哪个补哪个；装不上也不阻断（真实新
+# 机器几乎都自带，这里只兜极端裁剪过的系统）。
+if [ ! -e /etc/ssl/certs/ca-certificates.crt ] && [ ! -e /etc/pki/tls/certs/ca-bundle.crt ]; then
+  info "未检测到 CA 证书包，尝试安装 ca-certificates..."
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -qq >/dev/null 2>&1 || true
+    apt-get install -y ca-certificates >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y ca-certificates >/dev/null 2>&1 || true
+  fi
+  [ -e /etc/ssl/certs/ca-certificates.crt ] || [ -e /etc/pki/tls/certs/ca-bundle.crt ] \
+    || die "CA 证书包缺失且自动安装失败，请手动安装 ca-certificates 后重试"
+  ok "CA 证书包就绪"
+fi
+
+# ── 资源前置检查（只提醒不阻断）────────────────────
+mem_kb="$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+if [ "${mem_kb:-0}" -gt 0 ] && [ "$mem_kb" -lt 3800000 ]; then
+  warn "内存 < 4G：多 worker 并发 + 压缩器会吃紧（建议 4C8G 起）"
+fi
+disk_avail="$(df -Pk / 2>/dev/null | awk 'NR==2{print $4}')"
+if [ -n "${disk_avail:-}" ] && [ "$disk_avail" -lt 10485760 ]; then
+  warn "根分区可用 < 10G：装工具/SecLists(约2.5G)/nuclei 模板/chromium 可能不够（建议 ≥40G）"
+fi
+if command -v python3 >/dev/null 2>&1; then
+  pyver="$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo "0.0")"
+  case "$pyver" in
+    3.10|3.11|3.12|3.13|3.14) ;;
+    *) warn "python3 版本 ${pyver}：内置 FOFA MCP 需要 ≥3.10（不影响主服务）" ;;
+  esac
+else
+  warn "未检测到 python3：内置 FOFA MCP 需要 Python ≥3.10（不影响主服务）"
+fi
 
 # ── 出网代理：交互式配置 + 自动验证 ────────────────
 #
@@ -566,6 +606,12 @@ UNIT
   systemctl restart "$SERVICE"
   ok "systemd 服务已启动（${SERVICE}）"
 
+  # 内置 MCP 服务器随包落地（FOFA 资产测绘），并把 uv 备好，预设开箱即用。
+  if [ -d "$INSTALL_DIR/mcp-servers/fofa" ]; then
+    ok "内置 MCP 服务器已安装（$INSTALL_DIR/mcp-servers/fofa）"
+  fi
+  ensure_uv
+
   if [ "$WITH_INSTALLER" = "1" ]; then install_hostd; fi
 }
 
@@ -875,9 +921,9 @@ install_fonts(){
 # 不用 apt 源：这些工具的 apt 包要么没有要么版本极旧。
 install_github_tools(){
   local GOBIN_DIR="/usr/local/bin"
-  local arch="amd64" arch2="x86_64" arch3="x86" arch4="x64"
+  local arch="amd64" arch2="x86_64" arch3="x86" arch4="x64" lin="x86_64"
   if [ "$ARCH" = "aarch64" ]; then
-    arch="arm64"; arch2="aarch64"; arch3="arm"; arch4="arm64"
+    arch="arm64"; arch2="aarch64"; arch3="arm"; arch4="arm64"; lin="arm64"
   fi
 
   # repo|资产模板|二进制名
@@ -896,6 +942,7 @@ jpillora/chisel|chisel_{ver}_linux_{arch}.gz|chisel
 OWASP/Amass|amass_linux_{arch}.tar.gz|amass
 hahwul/dalfox|dalfox-{verv}-linux-{arch2}.tar.gz|dalfox
 epi052/feroxbuster|{arch2}-linux-feroxbuster.tar.gz|feroxbuster
+OJ/gobuster|gobuster_Linux_{lin}.tar.gz|gobuster
 "
   local spec repo tmpl bin tag ver url asset file tmpd
   for spec in $specs; do
@@ -920,6 +967,7 @@ epi052/feroxbuster|{arch2}-linux-feroxbuster.tar.gz|feroxbuster
     asset="${asset//\{arch2\}/$arch2}"
     asset="${asset//\{arch3\}/$arch3}"
     asset="${asset//\{arch4\}/$arch4}"
+    asset="${asset//\{lin\}/$lin}"
     url="https://github.com/$repo/releases/download/${tag}/${asset}"
     file="$TMP/$(basename "$asset")"
     tmpd="$TMP/ghtool"
@@ -974,6 +1022,41 @@ install_wordlists(){
   fi
 }
 
+# uv：内置 MCP「FOFA 资产测绘」用它拉起 stdio server（相对路径 mcp-servers/fofa）。
+#
+# 关键点（真实踩坑）：pojun 服务是 systemd 用户，PATH 只保证
+# /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin；pipx 以 root 安装
+# 会把 uv 放到 /root/.local/bin（服务用户既无权穿越 /root 也不在 PATH）——必须
+# 把二进制统一落到 /usr/local/bin，否则「预设能加、MCP 起不来」。best-effort：
+# 装不上只提示，不影响主服务。
+ensure_uv(){
+  local cand=""
+  for c in /usr/local/bin/uv /usr/bin/uv /root/.local/bin/uv "$HOME/.local/bin/uv"; do
+    if [ -x "$c" ]; then cand="$c"; break; fi
+  done
+  if [ -z "$cand" ]; then
+    if command -v pipx >/dev/null 2>&1; then
+      pipx install --global uv >/dev/null 2>&1 || pipx install uv >/dev/null 2>&1 || true
+    fi
+    if [ -z "$cand" ] && command -v python3 >/dev/null 2>&1; then
+      python3 -m pip install --break-system-packages -q uv >/dev/null 2>&1 || true
+    fi
+    for c in /usr/local/bin/uv /root/.local/bin/uv "$HOME/.local/bin/uv"; do
+      if [ -x "$c" ]; then cand="$c"; break; fi
+    done
+  fi
+  if [ -n "$cand" ] && [ "$cand" != "/usr/local/bin/uv" ]; then
+    cp -f "$cand" /usr/local/bin/uv 2>/dev/null || true
+    chmod 755 /usr/local/bin/uv 2>/dev/null || true
+  fi
+  if [ -x /usr/local/bin/uv ] && /usr/local/bin/uv --version >/dev/null 2>&1; then
+    ok "uv 就绪（/usr/local/bin/uv，FOFA MCP 可用）"
+  else
+    warn "uv 未就绪：FOFA MCP 预设需要它（pip install uv 后复制到 /usr/local/bin）"
+  fi
+  return 0
+}
+
 # pip 工具：wafw00f(WAF 识别)、impacket 的部分脚本。
 # 优先 pipx（隔离环境，不污染系统 Python，也不撞 PEP668 externally-managed），
 # 没有 pipx 就退回 python3 -m pip --break-system-packages。
@@ -990,9 +1073,11 @@ install_pip_tools(){
   # 包名|可执行文件名(空=该包不提供命令行)。已存在就跳过——
   # pipx 对已装的包会报错退出，不该当成"安装失败"。
   local specs="wafw00f|wafw00f
-netexec|netexec
 semgrep|semgrep
-pwntools|pwntools"
+pwntools|pwntools
+uv|uv"
+  # netexec 不装：NetExec 2026 起商业化，PyPI 发行文件已撤下（装必失败）；
+# 需要时从 GitHub 源码安装（hosttools netexec 条目有说明）。
   local spec pkg bin
   for spec in $specs; do
     pkg="$(printf '%s' "$spec" | cut -d'|' -f1)"
@@ -1064,6 +1149,7 @@ for _ in $(seq 1 30); do
   if curl -fsS -o /dev/null "http://127.0.0.1:${PORT}/api/health" 2>/dev/null; then
     HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
     ok "服务已就绪 → http://${HOST_IP:-127.0.0.1}:${PORT}（首次访问设置管理员密码）"
+    info "下一步：①设置管理员密码 ②「LLM 配置」配通道 ③「系统→MCP」用预设接入 FOFA/Playwright ④建任务可套用内置 Playbook"
     if [ "$MODE" = "binary" ]; then
       systemctl --no-pager status "$SERVICE" | head -5
     else
