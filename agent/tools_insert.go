@@ -42,6 +42,27 @@ func assetInterceptCandidates(item assetInputItem) (domains, ips, urls []string)
 	return domains, ips, urls
 }
 
+// identityHint 把候选串压成给模型看的一行身份提示（最多 3 个）。
+func identityHint(domains, ips, urls []string) string {
+	parts := make([]string, 0, 3)
+	for _, d := range domains {
+		if len(parts) < 3 {
+			parts = append(parts, d)
+		}
+	}
+	for _, u := range urls {
+		if len(parts) < 3 {
+			parts = append(parts, u)
+		}
+	}
+	for _, ip := range ips {
+		if len(parts) < 3 {
+			parts = append(parts, ip)
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
 // assetInputLabel 返回一条待插入资产的简短标识，用于拦截说明消息。
 func assetInputLabel(item assetInputItem) string {
 	typ := strings.TrimSpace(item.Type)
@@ -252,6 +273,22 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 				typ := strings.TrimSpace(item.Type)
 				var id int64
 				var err error
+
+				// 授权边界守卫（v0.4.63）：插入/认领前先查身份——
+				// 若该资产已存在、由其他任务登记、且不在本任务自有 scope，则跳过，
+				// 防止「碰到就自动认领」把别的任务的资产悄悄拉进本任务。
+				if t.ScopeWriteGuard && taskID > 0 {
+					gd, gi, gu := assetInterceptCandidates(item)
+					if fid, owners, ferr := t.as.FindForeignAssetForTask(taskID, gd, gi, gu); ferr == nil && fid > 0 {
+						errs = append(errs, errEntry{
+							Index: i,
+							Error: fmt.Sprintf("资产 %s %s 已归属其他任务(任务 %s)且不在本任务自有范围，已跳过登记——"+
+								"防止跨任务串资产。如确属本任务授权，请先用 add_task_scope 显式纳入本任务范围后重试。",
+								assetInputLabel(item), identityHint(gd, gi, gu), owners),
+						})
+						continue
+					}
+				}
 
 				switch typ {
 				case "root_domain":
@@ -684,6 +721,14 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.searchAllWorkerTraces(), t.getWorkerTrace(),
 		// node_detail：worker 拿到 intent_id/节点 id 后可查该节点完整详情（配合上面的回看）。
 		t.nodeDetail(),
+		// expand_digest（v0.4.50）：worker 可以展开冷区折叠的节点完整内容——
+		// 之前 worker 只能看到 title/summary 摘要，折叠内容对 worker 不可见。
+		t.expandDigest(),
+		// list_untested_assets（v0.4.50）：worker 也应该知道哪些资产还没测——
+		// 在执行涉及资产遍历的意图时能自行补漏。
+		t.listUntestedAssets(),
+		// list_goals（v0.4.50）：worker 知道目标完成进度，有助于判断该方向值不值得继续深挖。
+		t.listGoals(),
 		// search_vulns / get_vuln：worker 识别出目标组件与版本后直接查已知漏洞与
 		// 影响区间——公开情报优先于模型现想 payload。
 		t.searchVulns(), t.getVuln(), t.getPoc(), t.scanWithNuclei(), t.netContext(),
@@ -692,6 +737,9 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// http_probe（v0.4.27）：批量探活领域工具——替代逐条手写 curl（任务 5 实测
 		// Bash 占 tool_use 57%、curl 2750 次），一次往返拿整批紧凑摘要。
 		t.httpProbe(),
+		// js_audit（v0.4.59）：SPA/webpack 前端源码泄露审计——任务 18（Vue 站点）
+		// 实测对 .js.map 泄漏完全漏检；sourcemap 还原=原始源码+密钥+接口清单。
+		t.jsAudit(),
 		// auth_request：用资产上已登记的凭据组装带认证的请求（横向/越权验证的前提）。
 		t.authRequest(),
 		// diff_responses：对比两个响应的结构性差异（越权/可枚举/状态机三类的共同基础）。
@@ -733,6 +781,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.searchVulns(), t.getVuln(), t.getPoc(), t.scanWithNuclei(), t.netContext(),
 		// http_probe（v0.4.27）：批量探活领域工具（mainagent 与 worker 同款）。
 		t.httpProbe(),
+		// js_audit（v0.4.59）：SPA/webpack 源码泄露审计（mainagent 与 worker 同款）。
+		t.jsAudit(),
 		// listener_*：回连接收器（红队 C2 前置）——start/stop 走 ask 审批，sessions 只读。
 		t.listenerStart(), t.listenerStop(), t.listenerSessions(),
 		// auth_request：用资产上已登记的凭据组装带认证的请求（横向/越权验证的前提）。
