@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -254,6 +255,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		}
 		go s.evidenceStore().RunGC(s.ctx)
 		go s.recoverPendingPreviews() // 文档预览：恢复上次未完成的队列（v0.4.23）
+		go s.recoverEmptyFindingReports() // 空报告巡检：重启/崩溃后补写被中断的报告（v0.4.63）
 		s.seedPythonInterpreter()     // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
 		go newScheduler(s).Run(s.ctx) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
 		// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
@@ -830,8 +832,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/auth-check", s.taskAuthCheck) // 登录凭据自检（真实发一次登录请求）
 	// 证据附件（v0.5.0）：列表 / 单文件下载 / 证据包 zip。
 	mux.HandleFunc("GET /api/tasks/{id}/artifacts", s.listTaskArtifacts)
-	mux.HandleFunc("PATCH /api/tasks/{id}/artifacts/{aid}", s.patchTaskArtifact) // 改归属（任务级 ↔ 漏洞）
-	mux.HandleFunc("POST /api/tasks/{id}/artifacts/scan", s.scanTaskArtifacts)     // 历史目录补登记
+	mux.HandleFunc("PATCH /api/tasks/{id}/artifacts/{aid}", s.patchTaskArtifact)    // 改归属（任务级 ↔ 漏洞）
+	mux.HandleFunc("POST /api/tasks/{id}/artifacts/scan", s.scanTaskArtifacts)      // 历史目录补登记
 	mux.HandleFunc("POST /api/tasks/{id}/artifacts/auto-bind", s.autoBindArtifacts) // 智能关联（v0.4.42）
 	mux.HandleFunc("GET /api/tasks/{id}/artifacts/export", s.exportTaskArtifacts)
 	mux.HandleFunc("GET /api/tasks/{id}/artifacts/{aid}", s.serveTaskArtifact)
@@ -2326,6 +2328,60 @@ func (s *Server) findingsExport(w http.ResponseWriter, r *http.Request) {
 		defer file.Close()
 		setDownload("application/zip", "findings-"+stamp+".zip")
 		http.ServeContent(w, r, "findings.zip", now, file)
+	case "docx-zip":
+		// 批量 Word 导出（v0.4.48）：每条漏洞生成独立 .docx 并打包 zip。
+		for _, f := range fs {
+			fCopy := *f
+			names := s.reportAssetNames([]*db.DBFinding{&fCopy})
+			retests, _ := s.m.pg.ListFindingRetests(fCopy.ID)
+			customer := ""
+			classification := "内部资料 · 仅限授权方"
+			if fCopy.TaskID != nil && *fCopy.TaskID > 0 {
+				if tt := s.m.ResolveTask(strconv.FormatInt(*fCopy.TaskID, 10)); tt != nil {
+					customer = s.taskCustomerNames(tt)
+				}
+			}
+			doc := report.BuildFindingDocx(report.FindingDocxInput{
+				Finding:        &fCopy,
+				GeneratedAt:    now,
+				AssetNameMap:   names,
+				Retests:        retests,
+				Customer:       customer,
+				Classification: classification,
+				ArtifactImage: func() func(int64) ([]byte, string, bool) {
+					if fCopy.TaskID == nil || *fCopy.TaskID <= 0 {
+						return nil
+					}
+					return s.artifactImageResolver(strconv.FormatInt(*fCopy.TaskID, 10), fCopy.ID)
+				}(),
+			})
+			fname := fmt.Sprintf("pojun-finding-%d-%s.docx", fCopy.ID, now.Format("20060102"))
+			docFile := filepath.Join(stage, fname)
+			file, err := os.Create(docFile)
+			if err != nil {
+				writeErr(w, 500, err.Error())
+				return
+			}
+			if err = doc.Encode(file); err != nil {
+				file.Close()
+				writeErr(w, 500, err.Error())
+				return
+			}
+			file.Close()
+		}
+		zipPath := filepath.Join(stage, "findings-word-"+stamp+".zip")
+		if err := zipDocxFiles(stage, zipPath); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		file, err := os.Open(zipPath)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		defer file.Close()
+		setDownload("application/zip", "findings-word-"+stamp+".zip")
+		http.ServeContent(w, r, "findings-word-"+stamp+".zip", now, file)
 	case "csv":
 		setDownload("text/csv; charset=utf-8", "findings-"+stamp+".csv")
 		_, _ = w.Write(report.FindingsCSV(fs))
@@ -3476,7 +3532,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"intent_budget_enabled": ib.Enabled,
 		"intent_budget_tokens":  ib.Tokens,
 		// 证据逐字回验（v0.4.29）：off|warn|block，默认 warn。
-		"finding_evidence_verify":    evidenceVerifyModeFromPG(s.m.pg).String(),
+		"finding_evidence_verify":     evidenceVerifyModeFromPG(s.m.pg).String(),
 		"tool_output_injection_guard": injectionGuardFromPG(s.m.pg),
 		// LLM 轮询(故障转移)。默认关；开启后走全局激活配置的 agent 在当前配置不可用时
 		// 自动切到下一个配置。bind_fallback 仅在轮询开启时有意义(默认关)。
@@ -3573,9 +3629,15 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		// 意图级软预算（v0.4.28）：单意图 token 上限，500k–20M。
 		IntentBudgetEnabled *bool `json:"intent_budget_enabled"`
 		IntentBudgetTokens  *int  `json:"intent_budget_tokens"`
+		// 授权边界守卫与跨任务去重（v0.4.63）。
+		ScopeWriteGuard      *bool `json:"scope_write_guard"`
+		ScopeInheritWrites   *bool `json:"scope_inherit_writes"`
+		NotifyCrossTaskDedup *bool `json:"notify_cross_task_dedup"`
+		// 纵深缺口提醒（v0.4.63）。
+		DepthNudgeEnabled *bool `json:"depth_nudge_enabled"`
 		// 证据逐字回验（v0.4.29）：off|warn|block；工具输出注入告警开关。
-		EvidenceVerify     *string `json:"finding_evidence_verify"`
-		InjectionGuard     *bool   `json:"tool_output_injection_guard"`
+		EvidenceVerify *string `json:"finding_evidence_verify"`
+		InjectionGuard *bool   `json:"tool_output_injection_guard"`
 		// LLM 轮询(故障转移)开关 + 「绑定配置失败也兜底回轮询链」开关。两者都需要
 		// 重建 provider 链才生效，走下面的 changed → applyLLM 路径。
 		LLMPoolEnabled      *bool `json:"llm_pool_enabled"`
@@ -3774,6 +3836,31 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.m.pg.SetSetting(settingIntentBudgetTokens, strconv.Itoa(*req.IntentBudgetTokens)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+
+	if req.ScopeWriteGuard != nil {
+		if err := s.m.pg.SetBool("scope_write_guard", *req.ScopeWriteGuard); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.ScopeInheritWrites != nil {
+		if err := s.m.pg.SetBool("scope_inherit_writes", *req.ScopeInheritWrites); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.NotifyCrossTaskDedup != nil {
+		if err := s.m.pg.SetBool("notify_cross_task_dedup", *req.NotifyCrossTaskDedup); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.DepthNudgeEnabled != nil {
+		if err := s.m.pg.SetBool("depth_nudge_enabled", *req.DepthNudgeEnabled); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}
@@ -4248,4 +4335,34 @@ func atoiDefault(s string, d int) int {
 		return n
 	}
 	return d
+}
+
+// zipDocxFiles 打包 stage 目录下的 .docx 文件为 zip（v0.4.48 批量 Word 导出）。
+func zipDocxFiles(stage, zipPath string) error {
+	zipFile, err := os.Create(zipPath)
+	if err != nil {
+		return err
+	}
+	defer zipFile.Close()
+	zw := zip.NewWriter(zipFile)
+	defer zw.Close()
+	entries, err := os.ReadDir(stage)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".docx") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(stage, e.Name()))
+		if err != nil {
+			continue
+		}
+		f, err := zw.Create(e.Name())
+		if err != nil {
+			continue
+		}
+		_, _ = f.Write(data)
+	}
+	return nil
 }

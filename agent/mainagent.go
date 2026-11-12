@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/chu0119/pojun/db"
-	"github.com/chu0119/pojun/hosttools"
-	"github.com/chu0119/pojun/intercept"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
+	"github.com/chu0119/pojun/db"
+	"github.com/chu0119/pojun/hosttools"
+	"github.com/chu0119/pojun/intercept"
 )
 
 // MainAgent is the thin human-interface orchestrator (docs §4.2 / §7). The human
@@ -20,21 +20,25 @@ import (
 // autonomous intent-generation loop (that is the planner's job).
 type MainAgent struct {
 	findingRecorder FindingRecorder
-	prov            llm.Provider
-	model           string
-	tx              *transcript.Store                      // raw LLM conversation persistence (nil = off)
-	window          int                                    // context window in tokens (for compaction)
-	windowFn        func() int                             // optional dynamic task-chain minimum
-	maxTurns        int                                    // max agent turns per run (0 = unlimited)
-	proxyAddr       string                                 // recording proxy for WebFetch (empty = direct)
-	proxyCACert     string                                 // recording proxy's CA cert path (HTTPS verify)
-	webSearch       WebSearchOpts                          // web_search tool backend selection (off by default)
-	workDir         string                                 // shared work dir (surfaced in prompt as artifact-output target)
-	steerWork       func(intentID int64, msg string) error // engine callback: steer a running work (nil = off)
-	attributions    func() map[string]any                  // Guard 归因读取（nil = 概览不带 guard_attributions 块）
-	nonStreamingFn  func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
-	noaEnabledFn    func() bool                            // resolver: use experimental noa compaction? (nil = off)
-	maxTokensFn     func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
+	// 授权边界守卫开关（v0.4.63）：装配时从设置读取，传到 ToolSet。
+	scopeGuard           bool
+	scopeInheritWrites   bool
+	crossTaskNotifyDedup bool
+	prov                 llm.Provider
+	model                string
+	tx                   *transcript.Store                      // raw LLM conversation persistence (nil = off)
+	window               int                                    // context window in tokens (for compaction)
+	windowFn             func() int                             // optional dynamic task-chain minimum
+	maxTurns             int                                    // max agent turns per run (0 = unlimited)
+	proxyAddr            string                                 // recording proxy for WebFetch (empty = direct)
+	proxyCACert          string                                 // recording proxy's CA cert path (HTTPS verify)
+	webSearch            WebSearchOpts                          // web_search tool backend selection (off by default)
+	workDir              string                                 // shared work dir (surfaced in prompt as artifact-output target)
+	steerWork            func(intentID int64, msg string) error // engine callback: steer a running work (nil = off)
+	attributions         func() map[string]any                  // Guard 归因读取（nil = 概览不带 guard_attributions 块）
+	nonStreamingFn       func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
+	noaEnabledFn         func() bool                            // resolver: use experimental noa compaction? (nil = off)
+	maxTokensFn          func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
 }
 
 // SetNoaEnabled wires a resolver deciding whether runs use the experimental noa
@@ -61,6 +65,12 @@ func (m *MainAgent) maxTokens() int {
 
 func NewMainAgent(prov llm.Provider, model, workDir string, tx *transcript.Store, window, maxTurns int) *MainAgent {
 	return &MainAgent{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns}
+}
+
+func (m *MainAgent) SetScopeFlags(scopeGuard, scopeInheritWrites, crossTaskNotifyDedup bool) {
+	m.scopeGuard = scopeGuard
+	m.scopeInheritWrites = scopeInheritWrites
+	m.crossTaskNotifyDedup = crossTaskNotifyDedup
 }
 
 func (m *MainAgent) SetCompactionWindowResolver(fn func() int) { m.windowFn = fn }
@@ -91,6 +101,12 @@ func (m *MainAgent) SetAttributions(fn func() map[string]any) { m.attributions =
 // prompt, seeded into agent_prompts. Goal is a {{.Goal}} template var; the 中间
 // 产物输出规约 tail is code-owned (artifactSpec), appended after rendering.
 const mainAgentDefaultTmpl = `你是一个授权渗透测试系统的"主 agent"，是人类操作员的接口。你不亲自探索、也不自主连续生成意图（那是规划者的工作）。你的职责：
+
+**⚠️ 角色边界硬规则（v0.4.51）**：
+- Bash 仅限【本地文件操作】——报告编辑、图片处理、格式检查、工作目录管理。
+- **严禁用 Bash 与目标系统交互**——curl/dig/nmap/nc 到目标、对目标发任何请求都是越权行为。这类操作用 add_intent 派发给 worker 执行。
+- 你是协调者不是执行者：人让你"测一下 XX"→ 写成 add_intent 派给 worker；人让你"改报告"→ 用 Bash 编辑 report.md 是合法的。
+- 判断标准：如果你的 Bash 命令里出现了目标 IP/域名/URL，说明你在越权——应该写成 add_intent 派下去。
 
 1. 观察：用 graph_overview / list_findings / list_facts / list_assets / get_worker_output 回答人关于当前进展的问题。
 2. 操舵（把人的意图落到系统）：
@@ -124,16 +140,17 @@ func mainAgentSystem(goal, dataDir, workDir string) string {
 func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify, resume func(), notifyGoal, notifyHint func([]string)) (string, error) {
 	tsx := NewToolSet(ts, "human")
 	tsx.SetFindingRecorder(m.findingRecorder)
+	tsx.SetScopeFlags(m.scopeGuard, m.scopeInheritWrites, m.crossTaskNotifyDedup)
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())
 	}
 	tsx.SetTaskID(taskID)
 	tsx.SetCoverageEnabled(as == nil || as.CoverageEnabled(taskID))
-	tsx.SetNotify(notify)         // 通用唤醒（无专用回调的写操作走它，debounced）
-	tsx.SetResumeTask(resume)     // set_goals 新增目标 → 把已完成/暂停的任务拉回 running
-	tsx.SetNotifyGoal(notifyGoal) // set_goals 新增目标 → 给 planner 记一条「人新增了目标：…」触发
-	tsx.SetNotifyHint(notifyHint) // add_hint 新增提示 → 给 planner 记一条「人新增了 N 条战略提示：…」触发
-	tsx.steerWork = m.steerWork   // enable steer_work tool (nil = unavailable)
+	tsx.SetNotify(notify)             // 通用唤醒（无专用回调的写操作走它，debounced）
+	tsx.SetResumeTask(resume)         // set_goals 新增目标 → 把已完成/暂停的任务拉回 running
+	tsx.SetNotifyGoal(notifyGoal)     // set_goals 新增目标 → 给 planner 记一条「人新增了目标：…」触发
+	tsx.SetNotifyHint(notifyHint)     // add_hint 新增提示 → 给 planner 记一条「人新增了 N 条战略提示：…」触发
+	tsx.steerWork = m.steerWork       // enable steer_work tool (nil = unavailable)
 	tsx.attributions = m.attributions // Guard 归因 → 概览 guard_attributions 块（nil = 省略）
 	// 领域工具 + 基础默认工具集（Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash）
 	// 资产覆盖度功能关闭时剔除 add_task_scope/list_untested_assets（不入 prompt）。
